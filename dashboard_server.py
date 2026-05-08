@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import random
+import sys
 import threading
 import time
 import webbrowser
@@ -33,6 +34,16 @@ CHANNEL_BASELINES = {
     "vehicle_speed_kph": {"mean": 78.0, "amplitude": 24.0, "noise": 5.0},
     "oil_pressure_kpa": {"mean": 315.0, "amplitude": 46.0, "noise": 14.0},
 }
+
+
+class DashboardHTTPServer(ThreadingHTTPServer):
+    """HTTP server that treats dropped SSE clients as normal disconnects."""
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        exception = sys.exception()
+        if isinstance(exception, (BrokenPipeError, ConnectionResetError, OSError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def load_dashboard_config(path: str | Path) -> ThresholdConfig:
@@ -170,8 +181,11 @@ def create_handler(thresholds: ThresholdConfig, seed: int | None, interval_ms: i
             while limit == 0 or sent < limit:
                 with simulator_lock:
                     payload = simulator.next_event()
-                self.wfile.write(encode_sse("reading", payload).encode("utf-8"))
-                self.wfile.flush()
+                try:
+                    self.wfile.write(encode_sse("reading", payload).encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
                 sent += 1
                 time.sleep(interval_ms / 1000.0)
 
@@ -210,7 +224,7 @@ def main() -> int:
     args = build_parser().parse_args()
     thresholds = load_dashboard_config(args.config)
     handler = create_handler(thresholds, args.seed, args.interval_ms)
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server = DashboardHTTPServer((args.host, args.port), handler)
     server.quiet = args.quiet
     url = f"http://{args.host}:{args.port}/"
 
