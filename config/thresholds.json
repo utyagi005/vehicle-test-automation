@@ -1,0 +1,44 @@
+{
+  "channels": {
+    "engine_temp_c": {
+      "warning": {
+        "min": 70.0,
+        "max": 100.0
+      },
+      "critical": {
+        "min": 60.0,
+        "max": 110.0
+      }
+    },
+    "battery_voltage_v": {
+      "warning": {
+        "min": 11.8,
+        "max": 14.6
+      },
+      "critical": {
+        "min": 10.5,
+        "max": 15.5
+      }
+    },
+    "vehicle_speed_kph": {
+      "warning": {
+        "min": 0.0,
+        "max": 120.0
+      },
+      "critical": {
+        "min": 0.0,
+        "max": 150.0
+      }
+    },
+    "oil_pressure_kpa": {
+      "warning": {
+        "min": 180.0,
+        "max": 520.0
+      },
+      "critical": {
+        "min": 120.0,
+        "max": 600.0
+      }
+    }
+  }
+}
