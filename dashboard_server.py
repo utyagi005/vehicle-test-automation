@@ -171,10 +171,11 @@ def create_handler(thresholds: ThresholdConfig, seed: int | None, interval_ms: i
             super().log_message(format, *args)
 
         def _stream_events(self, limit: int) -> None:
+            self.close_connection = limit > 0
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close" if limit > 0 else "keep-alive")
             self.end_headers()
 
             sent = 0
@@ -187,7 +188,8 @@ def create_handler(thresholds: ThresholdConfig, seed: int | None, interval_ms: i
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     break
                 sent += 1
-                time.sleep(interval_ms / 1000.0)
+                if limit == 0 or sent < limit:
+                    time.sleep(interval_ms / 1000.0)
 
         def _send_json(self, payload: dict[str, Any]) -> None:
             body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -252,17 +254,30 @@ DASHBOARD_HTML = """<!doctype html>
 </head>
 <body>
   <main class="dashboard-shell">
-    <header class="topbar">
-      <div>
-        <h1>ECU Live Telemetry Monitor</h1>
-        <p>Simulated real-time powertrain and chassis signal validation</p>
-      </div>
-      <div class="status-cluster">
-        <span class="stream-dot" aria-hidden="true"></span>
-        <span id="stream-status">Connecting</span>
-        <button id="freeze-button" type="button">Freeze</button>
-        <button id="export-json-button" type="button">Export JSON</button>
-        <button id="export-html-button" type="button">Export HTML</button>
+    <header class="hero-panel">
+      <nav class="utility-bar" aria-label="Dashboard controls">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Vehicle Test Automation</span>
+        </div>
+        <div class="status-cluster">
+          <span class="stream-dot" aria-hidden="true"></span>
+          <span id="stream-status">Connecting</span>
+          <button id="freeze-button" type="button">Freeze</button>
+          <button id="export-json-button" type="button">Export JSON</button>
+          <button id="export-html-button" type="button">Export HTML</button>
+        </div>
+      </nav>
+      <div class="hero-copy">
+        <div>
+          <h1>ECU Live Telemetry Monitor</h1>
+          <p>Real-time simulated ECU data stream with threshold validation, rolling signal health, and exportable test evidence.</p>
+        </div>
+        <div class="health-card">
+          <span>Signal Health</span>
+          <strong id="health-score">100%</strong>
+          <small id="health-label">Nominal stream</small>
+        </div>
       </div>
     </header>
 
@@ -270,6 +285,10 @@ DASHBOARD_HTML = """<!doctype html>
       <article class="metric-panel">
         <span>Total Samples</span>
         <strong id="sample-count">0</strong>
+      </article>
+      <article class="metric-panel">
+        <span>Stream Rate</span>
+        <strong id="stream-rate">0/s</strong>
       </article>
       <article class="metric-panel">
         <span>Warning Events</span>
@@ -285,12 +304,25 @@ DASHBOARD_HTML = """<!doctype html>
       </article>
     </section>
 
+    <section class="control-panel" aria-label="Channel focus controls">
+      <div>
+        <h2>Channel Focus</h2>
+        <p>Filter the monitoring grid without interrupting the stream.</p>
+      </div>
+      <div class="segmented-control" id="channel-filter" role="group" aria-label="Channel filter">
+        <button type="button" class="active" data-filter="all">All</button>
+      </div>
+    </section>
+
     <section class="workspace">
       <section class="chart-grid" id="chart-grid" aria-label="Live channel charts"></section>
       <aside class="severity-panel" aria-label="Severity feed">
         <div class="panel-heading">
-          <h2>Severity Feed</h2>
-          <span id="feed-count">0 events</span>
+          <div>
+            <h2>Severity Feed</h2>
+            <span id="feed-count">0 events</span>
+          </div>
+          <button id="clear-feed-button" type="button">Clear</button>
         </div>
         <ol id="severity-feed" class="severity-feed"></ol>
       </aside>
@@ -304,17 +336,19 @@ DASHBOARD_HTML = """<!doctype html>
 
 DASHBOARD_CSS = """
 :root {
-  --bg: #081013;
-  --panel: #101a1f;
-  --panel-2: #142329;
-  --line: #243941;
-  --text: #e6f1f2;
-  --muted: #8ba1a8;
-  --cyan: #28d5c4;
-  --green: #74d680;
-  --warning: #f8bd4a;
-  --critical: #ff5c50;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  color-scheme: light;
+  --bg: #f5f5f7;
+  --panel: rgba(255, 255, 255, 0.82);
+  --panel-solid: #ffffff;
+  --line: rgba(0, 0, 0, 0.09);
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --blue: #007aff;
+  --cyan: #00a7b5;
+  --green: #34c759;
+  --warning: #ff9f0a;
+  --critical: #ff3b30;
+  --shadow: 0 18px 44px rgba(20, 33, 61, 0.10);
 }
 
 * { box-sizing: border-box; }
@@ -324,50 +358,92 @@ body {
   min-height: 100vh;
   color: var(--text);
   background:
-    radial-gradient(circle at 20% 0%, rgba(40, 213, 196, 0.12), transparent 30%),
-    linear-gradient(135deg, #071012 0%, #0d171b 44%, #11181c 100%);
-  font: 14px/1.45 "SF Pro Display", "Segoe UI", Arial, sans-serif;
+    radial-gradient(circle at 12% 0%, rgba(0, 122, 255, 0.12), transparent 32%),
+    radial-gradient(circle at 88% 12%, rgba(52, 199, 89, 0.11), transparent 30%),
+    linear-gradient(180deg, #fbfbfd 0%, var(--bg) 46%, #eff2f7 100%);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  letter-spacing: 0;
 }
 
 button {
-  border: 1px solid #35525c;
-  border-radius: 6px;
-  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 13px;
   color: var(--text);
-  background: #17262c;
-  font: 700 12px/1 "SF Pro Display", "Segoe UI", Arial, sans-serif;
+  background: rgba(255, 255, 255, 0.72);
+  font: 700 12px/1 -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
   letter-spacing: 0;
   cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset;
 }
 
-button:hover { border-color: var(--cyan); }
+button:hover { border-color: rgba(0, 122, 255, 0.35); color: var(--blue); }
 
 .dashboard-shell {
   width: min(1480px, calc(100vw - 32px));
   margin: 0 auto;
-  padding: 24px 0 32px;
+  padding: 24px 0 38px;
 }
 
-.topbar {
+.hero-panel {
+  padding: 18px 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(26px);
+}
+
+.utility-bar,
+.hero-copy,
+.status-cluster,
+.brand-lockup,
+.panel-heading,
+.chart-header,
+.stat-strip,
+.control-panel {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.utility-bar {
   gap: 18px;
-  padding: 18px 20px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(16, 26, 31, 0.86);
-  box-shadow: var(--shadow);
+  color: var(--muted);
+}
+
+.brand-lockup {
+  justify-content: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--blue), var(--cyan));
+  box-shadow: 0 8px 20px rgba(0, 122, 255, 0.24);
+}
+
+.hero-copy {
+  gap: 28px;
+  margin-top: 38px;
+  align-items: flex-end;
 }
 
 h1, h2, p { margin: 0; }
-h1 { font-size: 26px; font-weight: 760; }
-h2 { font-size: 16px; }
-p { color: var(--muted); margin-top: 3px; }
+h1 {
+  max-width: 760px;
+  font-size: clamp(38px, 5vw, 68px);
+  line-height: 0.98;
+  font-weight: 800;
+}
+h2 { font-size: 16px; font-weight: 760; }
+p { color: var(--muted); margin-top: 8px; max-width: 680px; }
 
 .status-cluster {
-  display: flex;
-  align-items: center;
   gap: 10px;
   color: var(--muted);
   white-space: nowrap;
@@ -378,47 +454,95 @@ p { color: var(--muted); margin-top: 3px; }
   height: 10px;
   border-radius: 50%;
   background: var(--green);
-  box-shadow: 0 0 18px var(--green);
+  box-shadow: 0 0 0 5px rgba(52, 199, 89, 0.14);
 }
 
-.stream-dot.frozen { background: var(--warning); box-shadow: 0 0 18px var(--warning); }
-.stream-dot.offline { background: var(--critical); box-shadow: 0 0 18px var(--critical); }
+.stream-dot.frozen { background: var(--warning); box-shadow: 0 0 0 5px rgba(255, 159, 10, 0.14); }
+.stream-dot.offline { background: var(--critical); box-shadow: 0 0 0 5px rgba(255, 59, 48, 0.14); }
+
+.health-card {
+  min-width: 190px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  text-align: right;
+}
+
+.health-card span,
+.health-card small,
+.metric-panel span,
+.chart-meta,
+.stat-label,
+.panel-heading span {
+  color: var(--muted);
+}
+
+.health-card span,
+.metric-panel span,
+.stat-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.health-card strong {
+  display: block;
+  margin: 5px 0 2px;
+  font-size: 34px;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
 
 .overview-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin: 14px 0;
 }
 
-.metric-panel, .chart-card, .severity-panel {
+.metric-panel, .chart-card, .severity-panel, .control-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(20, 35, 41, 0.96), rgba(12, 21, 25, 0.96));
+  background: var(--panel);
   box-shadow: var(--shadow);
+  backdrop-filter: blur(22px);
 }
 
 .metric-panel {
   padding: 14px 16px;
 }
 
-.metric-panel span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
 .metric-panel strong {
   display: block;
   margin-top: 6px;
-  color: var(--cyan);
+  color: var(--blue);
   font-size: 30px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
 .critical-panel strong { color: var(--critical); }
+
+.control-panel {
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+}
+
+.segmented-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.segmented-control button.active {
+  color: white;
+  border-color: var(--blue);
+  background: var(--blue);
+}
 
 .workspace {
   display: grid;
@@ -433,47 +557,66 @@ p { color: var(--muted); margin-top: 3px; }
 }
 
 .chart-card {
-  min-height: 278px;
-  padding: 14px;
+  min-height: 320px;
+  padding: 16px;
 }
 
 .chart-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+  align-items: flex-start;
 }
 
 .chart-title {
-  font-size: 14px;
-  font-weight: 760;
+  font-size: 17px;
+  font-weight: 780;
 }
 
 .chart-value {
-  color: var(--cyan);
-  font-size: 24px;
-  font-weight: 760;
+  color: var(--blue);
+  font-size: 28px;
+  font-weight: 780;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .chart-meta {
-  color: var(--muted);
+  margin-top: 2px;
   font-size: 12px;
 }
 
 .chart-card canvas {
   width: 100%;
-  height: 190px;
+  height: 178px;
   display: block;
-  border: 1px solid rgba(80, 116, 126, 0.28);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: #091316;
+  background: linear-gradient(180deg, #ffffff, #f7f9fc);
+}
+
+.stat-strip {
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.stat-strip div {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.stat-value {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
 }
 
 .severity-panel {
-  min-height: 570px;
+  min-height: 640px;
   max-height: calc(100vh - 210px);
   overflow: hidden;
   display: flex;
@@ -481,16 +624,8 @@ p { color: var(--muted); margin-top: 3px; }
 }
 
 .panel-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 14px 10px;
+  padding: 16px;
   border-bottom: 1px solid var(--line);
-}
-
-.panel-heading span {
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .severity-feed {
@@ -504,8 +639,8 @@ p { color: var(--muted); margin-top: 3px; }
   display: grid;
   grid-template-columns: 82px 1fr;
   gap: 10px;
-  padding: 10px;
-  border-bottom: 1px solid rgba(80, 116, 126, 0.25);
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--line);
 }
 
 .severity-feed time {
@@ -526,18 +661,24 @@ p { color: var(--muted); margin-top: 3px; }
 
 .severity-warning strong { color: var(--warning); }
 .severity-critical strong { color: var(--critical); }
+.hidden-by-filter,
+.severity-feed li.hidden-by-filter { display: none; }
 
 @media (max-width: 1040px) {
-  .topbar { align-items: flex-start; flex-direction: column; }
+  .utility-bar, .hero-copy, .control-panel { align-items: flex-start; flex-direction: column; }
   .status-cluster { flex-wrap: wrap; }
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace { grid-template-columns: 1fr; }
   .severity-panel { max-height: 430px; }
+  .health-card { text-align: left; }
 }
 
 @media (max-width: 760px) {
   .dashboard-shell { width: min(100vw - 20px, 720px); padding-top: 10px; }
   .overview-grid, .chart-grid { grid-template-columns: 1fr; }
-  h1 { font-size: 22px; }
+  h1 { font-size: 36px; }
+  .status-cluster, .segmented-control { width: 100%; justify-content: flex-start; }
+  .stat-strip { flex-direction: column; align-items: stretch; }
 }
 """
 
@@ -553,9 +694,12 @@ const CHANNEL_LABELS = {
 const MAX_POINTS = 90;
 const state = {
   frozen: false,
+  activeFilter: "all",
   thresholds: {},
   readings: [],
   series: new Map(),
+  lastSampleAt: 0,
+  streamRate: 0,
   warnings: 0,
   critical: 0,
   feed: []
@@ -568,16 +712,32 @@ const sampleCount = document.querySelector("#sample-count");
 const warningCount = document.querySelector("#warning-count");
 const criticalCount = document.querySelector("#critical-count");
 const windowCount = document.querySelector("#window-count");
+const healthScore = document.querySelector("#health-score");
+const healthLabel = document.querySelector("#health-label");
+const streamRate = document.querySelector("#stream-rate");
 const statusText = document.querySelector("#stream-status");
 const streamDot = document.querySelector(".stream-dot");
 const freezeButton = document.querySelector("#freeze-button");
+const channelFilter = document.querySelector("#channel-filter");
+const clearFeedButton = document.querySelector("#clear-feed-button");
 
 async function init() {
   const response = await fetch("/thresholds");
   const payload = await response.json();
   state.thresholds = payload.channels;
-  Object.keys(state.thresholds).forEach(createChartCard);
+  Object.keys(state.thresholds).forEach((channel) => {
+    createFilterButton(channel);
+    createChartCard(channel);
+  });
   connectStream();
+}
+
+function createFilterButton(channel) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.filter = channel;
+  button.textContent = CHANNEL_LABELS[channel] || channel;
+  channelFilter.appendChild(button);
 }
 
 function createChartCard(channel) {
@@ -597,6 +757,12 @@ function createChartCard(channel) {
       </div>
     </div>
     <canvas width="620" height="220" aria-label="${channel} live chart"></canvas>
+    <div class="stat-strip" aria-label="${channel} rolling statistics">
+      <div><span class="stat-label">Mean</span><span class="stat-value" data-role="mean">--</span></div>
+      <div><span class="stat-label">Min</span><span class="stat-value" data-role="min">--</span></div>
+      <div><span class="stat-label">Max</span><span class="stat-value" data-role="max">--</span></div>
+      <div><span class="stat-label">Out</span><span class="stat-value" data-role="out">0%</span></div>
+    </div>
   `;
   chartGrid.appendChild(card);
 }
@@ -613,6 +779,12 @@ function connectStream() {
 }
 
 function ingestReading(reading) {
+  const now = Date.now();
+  if (state.lastSampleAt) {
+    const instantRate = 1000 / Math.max(now - state.lastSampleAt, 1);
+    state.streamRate = state.streamRate ? (state.streamRate * 0.82 + instantRate * 0.18) : instantRate;
+  }
+  state.lastSampleAt = now;
   state.readings.push(reading);
   const points = state.series.get(reading.channel) || [];
   points.push(reading);
@@ -624,22 +796,41 @@ function ingestReading(reading) {
   if (reading.severity !== "normal") addSeverityEvent(reading);
 
   updateMetrics();
+  updateHealthScore();
+  updateRollingStats(reading.channel);
   updateChart(reading.channel);
 }
 
 function updateMetrics() {
   sampleCount.textContent = state.readings.length.toString();
+  streamRate.textContent = `${state.streamRate.toFixed(1)}/s`;
   warningCount.textContent = state.warnings.toString();
   criticalCount.textContent = state.critical.toString();
   windowCount.textContent = `${MAX_POINTS} pts`;
 }
 
+function updateHealthScore() {
+  const total = Math.max(state.readings.length, 1);
+  const weightedPenalty = state.warnings * 1.8 + state.critical * 5.5;
+  const score = Math.max(0, Math.round(100 - (weightedPenalty / total) * 100));
+  healthScore.textContent = `${score}%`;
+  if (score >= 92) {
+    healthScore.style.color = "#34c759";
+    healthLabel.textContent = "Nominal stream";
+  } else if (score >= 78) {
+    healthScore.style.color = "#ff9f0a";
+    healthLabel.textContent = "Watch active limits";
+  } else {
+    healthScore.style.color = "#ff3b30";
+    healthLabel.textContent = "Engineering review";
+  }
+}
+
 function addSeverityEvent(reading) {
   state.feed.unshift(reading);
   state.feed = state.feed.slice(0, 80);
-  feedCount.textContent = `${state.feed.length} events`;
   feedList.innerHTML = state.feed.map((item) => `
-    <li class="severity-${item.severity}">
+    <li class="severity-${item.severity}" data-channel="${item.channel}">
       <time>${item.timestamp_ms} ms</time>
       <div>
         <strong>${item.severity.toUpperCase()} · ${CHANNEL_LABELS[item.channel] || item.channel}</strong>
@@ -647,6 +838,7 @@ function addSeverityEvent(reading) {
       </div>
     </li>
   `).join("");
+  applyFeedFilter();
 }
 
 function updateChart(channel) {
@@ -659,6 +851,19 @@ function updateChart(channel) {
   card.querySelector('[data-role="status"]').textContent =
     latest.severity === "normal" ? "Nominal" : latest.severity.toUpperCase();
   drawChart(card.querySelector("canvas"), points, latest.limits);
+}
+
+function updateRollingStats(channel) {
+  const card = document.querySelector(`[data-channel="${channel}"]`);
+  const points = state.series.get(channel) || [];
+  if (!card || points.length === 0) return;
+  const values = points.map((point) => point.value);
+  const latest = points[points.length - 1];
+  const out = points.filter((point) => point.severity !== "normal").length;
+  card.querySelector('[data-role="mean"]').textContent = `${average(values).toFixed(2)} ${latest.unit}`;
+  card.querySelector('[data-role="min"]').textContent = Math.min(...values).toFixed(2);
+  card.querySelector('[data-role="max"]').textContent = Math.max(...values).toFixed(2);
+  card.querySelector('[data-role="out"]').textContent = `${Math.round((out / points.length) * 100)}%`;
 }
 
 function drawChart(canvas, points, limits) {
@@ -675,13 +880,17 @@ function drawChart(canvas, points, limits) {
   const max = high + padding;
 
   drawGrid(ctx, width, height);
-  drawThreshold(ctx, width, height, limits.warning.max, min, max, "#f8bd4a");
-  drawThreshold(ctx, width, height, limits.critical.max, min, max, "#ff5c50");
+  drawThresholdBand(ctx, width, height, limits.warning.min, limits.warning.max, min, max, "rgba(255, 159, 10, 0.08)");
+  drawThresholdBand(ctx, width, height, limits.critical.min, limits.critical.max, min, max, "rgba(255, 59, 48, 0.06)");
+  drawThreshold(ctx, width, height, limits.warning.min, min, max, "#ff9f0a");
+  drawThreshold(ctx, width, height, limits.warning.max, min, max, "#ff9f0a");
+  drawThreshold(ctx, width, height, limits.critical.min, min, max, "#ff3b30");
+  drawThreshold(ctx, width, height, limits.critical.max, min, max, "#ff3b30");
   drawLine(ctx, points, min, max, width, height);
 }
 
 function drawGrid(ctx, width, height) {
-  ctx.strokeStyle = "rgba(139, 161, 168, 0.16)";
+  ctx.strokeStyle = "rgba(60, 60, 67, 0.10)";
   ctx.lineWidth = 1;
   for (let i = 1; i < 5; i += 1) {
     const y = (height / 5) * i;
@@ -692,11 +901,18 @@ function drawGrid(ctx, width, height) {
   }
 }
 
+function drawThresholdBand(ctx, width, height, lower, upper, min, max, color) {
+  const yUpper = height - ((upper - min) / (max - min)) * height;
+  const yLower = height - ((lower - min) / (max - min)) * height;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, yUpper, width, yLower - yUpper);
+}
+
 function drawThreshold(ctx, width, height, value, min, max, color) {
   const y = height - ((value - min) / (max - min)) * height;
   ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.65;
-  ctx.setLineDash([8, 8]);
+  ctx.globalAlpha = 0.58;
+  ctx.setLineDash([6, 8]);
   ctx.beginPath();
   ctx.moveTo(0, y);
   ctx.lineTo(width, y);
@@ -707,8 +923,8 @@ function drawThreshold(ctx, width, height, value, min, max, color) {
 
 function drawLine(ctx, points, min, max, width, height) {
   if (points.length < 2) return;
-  ctx.strokeStyle = "#28d5c4";
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#007aff";
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
   points.forEach((point, index) => {
     const x = (index / (MAX_POINTS - 1)) * width;
@@ -721,7 +937,7 @@ function drawLine(ctx, points, min, max, width, height) {
   const latest = points[points.length - 1];
   const latestX = ((points.length - 1) / (MAX_POINTS - 1)) * width;
   const latestY = height - ((latest.value - min) / (max - min)) * height;
-  ctx.fillStyle = latest.severity === "critical" ? "#ff5c50" : latest.severity === "warning" ? "#f8bd4a" : "#74d680";
+  ctx.fillStyle = latest.severity === "critical" ? "#ff3b30" : latest.severity === "warning" ? "#ff9f0a" : "#34c759";
   ctx.beginPath();
   ctx.arc(latestX, latestY, 5, 0, Math.PI * 2);
   ctx.fill();
@@ -732,11 +948,58 @@ function setStreamStatus(label, mode) {
   streamDot.className = `stream-dot ${mode === "offline" ? "offline" : ""}`;
 }
 
+function setChannelFilter(channel) {
+  state.activeFilter = channel;
+  channelFilter.querySelectorAll("button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.filter === channel);
+  });
+  document.querySelectorAll(".chart-card").forEach((card) => {
+    card.classList.toggle("hidden-by-filter", channel !== "all" && card.dataset.channel !== channel);
+  });
+  applyFeedFilter();
+}
+
+function applyFeedFilter() {
+  feedList.querySelectorAll("li").forEach((item) => {
+    const itemChannel = item.getAttribute("data-channel");
+    item.classList.toggle(
+      "hidden-by-filter",
+      state.activeFilter !== "all" && itemChannel !== state.activeFilter
+    );
+  });
+  updateVisibleFeedCount();
+}
+
+function updateVisibleFeedCount() {
+  const visible = state.activeFilter === "all"
+    ? state.feed.length
+    : state.feed.filter((item) => item.channel === state.activeFilter).length;
+  feedCount.textContent = state.activeFilter === "all"
+    ? `${state.feed.length} events`
+    : `${visible} shown / ${state.feed.length} events`;
+}
+
+function average(values) {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 freezeButton.addEventListener("click", () => {
   state.frozen = !state.frozen;
   freezeButton.textContent = state.frozen ? "Resume" : "Freeze";
   statusText.textContent = state.frozen ? "Frozen" : "Live";
   streamDot.className = `stream-dot ${state.frozen ? "frozen" : ""}`;
+});
+
+channelFilter.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-filter]");
+  if (!button) return;
+  setChannelFilter(button.dataset.filter);
+});
+
+clearFeedButton.addEventListener("click", () => {
+  state.feed = [];
+  feedList.innerHTML = "";
+  updateVisibleFeedCount();
 });
 
 document.querySelector("#export-json-button").addEventListener("click", () => exportReport("json"));

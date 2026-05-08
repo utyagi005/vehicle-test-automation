@@ -11,7 +11,7 @@ This project is designed to demonstrate the kind of practical automation used by
 - Flags warning and critical anomalies with timestamp, breached threshold, severity, and readable descriptions.
 - Computes per-channel statistics: count, mean, population standard deviation, min, max, and percent out of range.
 - Writes both machine-readable `report.json` and self-contained `report.html`.
-- Runs a live SSE dashboard that simulates a real-time ECU stream with charts, a severity feed, freeze, and export.
+- Runs an Apple-inspired live SSE dashboard that simulates a real-time ECU stream with charts, severity feed, signal health, channel focus, freeze, and export.
 - Includes a synthetic telemetry generator for realistic test runs.
 - Uses only Python standard library at runtime. Tests use `pytest`.
 
@@ -78,7 +78,7 @@ For interview demos, run the real-time dashboard:
 .venv/bin/python dashboard_server.py --config config/thresholds.json --port 8765 --open
 ```
 
-The dashboard uses Server-Sent Events from the Python stdlib HTTP server to simulate a live ECU stream. It renders live-updating charts per channel, flags warning and critical events in a side feed, and supports freeze plus JSON/HTML export of the current live buffer.
+The dashboard uses Server-Sent Events from the Python stdlib HTTP server to simulate a live ECU stream. It renders live-updating charts per channel, signal-health scoring, stream-rate monitoring, rolling per-channel stats, threshold bands, a filterable severity feed, and freeze plus JSON/HTML export of the current live buffer.
 
 ![Live ECU dashboard](docs/screenshots/live-dashboard.png)
 

@@ -1,8 +1,14 @@
 import json
+import threading
+import urllib.request
 
 from dashboard_server import (
     DashboardTelemetrySimulator,
+    DashboardHTTPServer,
+    DASHBOARD_HTML,
+    DASHBOARD_JS,
     build_export_report,
+    create_handler,
     encode_sse,
     load_dashboard_config,
 )
@@ -69,3 +75,43 @@ def test_build_export_report_reuses_analyzer_stats():
     assert report["summary"]["critical_count"] == 1
     assert report["channels"]["engine_temp_c"]["percent_out_of_range"] == 50.0
     assert report["anomalies"][0]["threshold_breached"] == "critical max 110.0"
+
+
+def test_dashboard_shell_includes_advanced_apple_style_controls():
+    assert 'id="health-score"' in DASHBOARD_HTML
+    assert 'id="stream-rate"' in DASHBOARD_HTML
+    assert 'id="channel-filter"' in DASHBOARD_HTML
+    assert 'data-filter="all"' in DASHBOARD_HTML
+    assert 'id="clear-feed-button"' in DASHBOARD_HTML
+
+
+def test_dashboard_client_updates_health_score_and_channel_focus():
+    assert "function updateHealthScore()" in DASHBOARD_JS
+    assert "function setChannelFilter(channel)" in DASHBOARD_JS
+    assert "function updateRollingStats(channel)" in DASHBOARD_JS
+    assert "function updateVisibleFeedCount()" in DASHBOARD_JS
+    assert "drawThresholdBand" in DASHBOARD_JS
+
+
+def test_limited_sse_stream_closes_after_requested_event_count():
+    thresholds = {
+        "engine_temp_c": {
+            "warning": {"min": 70.0, "max": 100.0},
+            "critical": {"min": 60.0, "max": 110.0},
+        }
+    }
+    server = DashboardHTTPServer(("127.0.0.1", 0), create_handler(thresholds, seed=1, interval_ms=1))
+    server.quiet = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/stream?limit=2"
+        with urllib.request.urlopen(url, timeout=1) as response:
+            body = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+    assert body.count("event: reading") == 2
