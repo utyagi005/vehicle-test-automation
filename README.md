@@ -11,6 +11,7 @@ This project is designed to demonstrate the kind of practical automation used by
 - Flags warning and critical anomalies with timestamp, breached threshold, severity, and readable descriptions.
 - Computes per-channel statistics: count, mean, population standard deviation, min, max, and percent out of range.
 - Writes both machine-readable `report.json` and self-contained `report.html`.
+- Runs a live SSE dashboard that simulates a real-time ECU stream with charts, a severity feed, freeze, and export.
 - Includes a synthetic telemetry generator for realistic test runs.
 - Uses only Python standard library at runtime. Tests use `pytest`.
 
@@ -21,6 +22,7 @@ vehicle-test-automation/
 ├── analyzer.py              # CSV parsing, threshold logic, anomaly detection, stats
 ├── reporter.py              # JSON and HTML report generation
 ├── main.py                  # argparse CLI entrypoint
+├── dashboard_server.py      # Live SSE telemetry dashboard
 ├── generate_sample_data.py  # Synthetic ECU telemetry generator
 ├── config/
 │   └── thresholds.json      # Example warning/critical channel thresholds
@@ -51,6 +53,42 @@ Run the analyzer:
 ```
 
 Open `reports/report.html` in a browser or consume `reports/report.json` from another tool.
+
+## CLI Proof
+
+The CLI produces both structured outputs from generated telemetry:
+
+```bash
+$ .venv/bin/python generate_sample_data.py --output data/telemetry.csv --rows 200 --seed 42
+Wrote 200 synthetic telemetry rows to data/telemetry.csv
+
+$ .venv/bin/python main.py --input data/telemetry.csv --config config/thresholds.json --output reports/
+JSON report written to: reports/report.json
+HTML report written to: reports/report.html
+Analyzed 200 readings, flagged 13 anomalies.
+```
+
+![CLI-generated HTML report](docs/screenshots/cli-html-report.png)
+
+## Live Dashboard
+
+For interview demos, run the real-time dashboard:
+
+```bash
+.venv/bin/python dashboard_server.py --config config/thresholds.json --port 8765 --open
+```
+
+The dashboard uses Server-Sent Events from the Python stdlib HTTP server to simulate a live ECU stream. It renders live-updating charts per channel, flags warning and critical events in a side feed, and supports freeze plus JSON/HTML export of the current live buffer.
+
+![Live ECU dashboard](docs/screenshots/live-dashboard.png)
+
+Freeze the stream before talking through an anomaly sequence or exporting the current buffer:
+
+![Frozen dashboard export state](docs/screenshots/dashboard-frozen-export.png)
+
+The layout is responsive for smaller screens:
+
+![Mobile dashboard](docs/screenshots/live-dashboard-mobile.png)
 
 ## Threshold Config Format
 
@@ -93,6 +131,7 @@ Coverage includes:
 - Anomaly detection
 - Per-channel statistics
 - JSON and HTML report generation
+- Live dashboard SSE payload generation and export analysis
 
 ## Why This Project Matters
 
